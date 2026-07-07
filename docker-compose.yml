@@ -1,0 +1,85 @@
+services:
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tracking_db}
+      POSTGRES_USER: ${POSTGRES_USER:-tracker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trackerpass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - private-backend-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tracker} -d ${POSTGRES_DB:-tracking_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: ai-service
+    expose:
+      - "8000"
+    networks:
+      - private-backend-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  backend-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/${POSTGRES_DB:-tracking_db}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-tracker}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-trackerpass}
+      AI_SERVICE_BASE_URL: http://ai-service:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    networks:
+      - private-backend-net
+      - frontend-net
+    restart: unless-stopped
+
+  frontend-service:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8080/ws}
+    container_name: frontend-service
+    ports:
+      - "80:80"
+    depends_on:
+      backend-service:
+        condition: service_started
+    networks:
+      - frontend-net
+    restart: unless-stopped
+
+networks:
+  private-backend-net:
+    driver: bridge
+    internal: true
+  frontend-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
